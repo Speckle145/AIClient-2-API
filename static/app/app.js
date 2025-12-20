@@ -11,6 +11,8 @@ import {
     getProviderStats
 } from './utils.js';
 
+import { t } from './i18n.js';
+
 import {
     initFileUpload,
     fileUploadHandler
@@ -36,7 +38,8 @@ import {
     loadSystemInfo,
     updateTimeDisplay,
     loadProviders,
-    openProviderManager
+    openProviderManager,
+    showAuthModal
 } from './provider-manager.js';
 
 import {
@@ -105,7 +108,7 @@ function initApp() {
     loadInitialData();
     
     // 显示欢迎消息
-    showToast('欢迎使用AIClent2API管理控制台！', 'success');
+    showToast(t('common.success'), t('common.welcome'), 'success');
     
     // 每5秒更新服务器时间和运行时间显示
     setInterval(() => {
@@ -141,6 +144,7 @@ window.openProviderManager = openProviderManager;
 window.showProviderManagerModal = showProviderManagerModal;
 window.refreshProviderConfig = refreshProviderConfig;
 window.fileUploadHandler = fileUploadHandler;
+window.showAuthModal = showAuthModal;
 
 // 上传配置管理相关全局函数
 window.viewConfig = viewConfig;

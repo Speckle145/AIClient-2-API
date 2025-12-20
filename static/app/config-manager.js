@@ -3,6 +3,7 @@
 import { showToast, formatUptime } from './utils.js';
 import { handleProviderChange, handleGeminiCredsTypeChange, handleKiroCredsTypeChange } from './event-handlers.js';
 import { loadProviders } from './provider-manager.js';
+import { t } from './i18n.js';
 
 /**
  * 加载配置
@@ -32,6 +33,12 @@ async function loadConfiguration() {
         if (projectIdEl) projectIdEl.value = data.PROJECT_ID || '';
         if (geminiOauthCredsBase64El) geminiOauthCredsBase64El.value = data.GEMINI_OAUTH_CREDS_BASE64 || '';
         if (geminiOauthCredsFilePathEl) geminiOauthCredsFilePathEl.value = data.GEMINI_OAUTH_CREDS_FILE_PATH || '';
+        const geminiBaseUrlEl = document.getElementById('geminiBaseUrl');
+        if (geminiBaseUrlEl) geminiBaseUrlEl.value = data.GEMINI_BASE_URL || '';
+        const antigravityBaseUrlDailyEl = document.getElementById('antigravityBaseUrlDaily');
+        if (antigravityBaseUrlDailyEl) antigravityBaseUrlDailyEl.value = data.ANTIGRAVITY_BASE_URL_DAILY || '';
+        const antigravityBaseUrlAutopushEl = document.getElementById('antigravityBaseUrlAutopush');
+        if (antigravityBaseUrlAutopushEl) antigravityBaseUrlAutopushEl.value = data.ANTIGRAVITY_BASE_URL_AUTOPUSH || '';
         
         // OpenAI Custom
         const openaiApiKeyEl = document.getElementById('openaiApiKey');
@@ -53,10 +60,20 @@ async function loadConfiguration() {
         
         if (kiroOauthCredsBase64El) kiroOauthCredsBase64El.value = data.KIRO_OAUTH_CREDS_BASE64 || '';
         if (kiroOauthCredsFilePathEl) kiroOauthCredsFilePathEl.value = data.KIRO_OAUTH_CREDS_FILE_PATH || '';
+        const kiroBaseUrlEl = document.getElementById('kiroBaseUrl');
+        if (kiroBaseUrlEl) kiroBaseUrlEl.value = data.KIRO_BASE_URL || '';
+        const kiroRefreshUrlEl = document.getElementById('kiroRefreshUrl');
+        if (kiroRefreshUrlEl) kiroRefreshUrlEl.value = data.KIRO_REFRESH_URL || '';
+        const kiroRefreshIdcUrlEl = document.getElementById('kiroRefreshIdcUrl');
+        if (kiroRefreshIdcUrlEl) kiroRefreshIdcUrlEl.value = data.KIRO_REFRESH_IDC_URL || '';
         
         // Qwen OAuth
         const qwenOauthCredsFilePathEl = document.getElementById('qwenOauthCredsFilePath');
         if (qwenOauthCredsFilePathEl) qwenOauthCredsFilePathEl.value = data.QWEN_OAUTH_CREDS_FILE_PATH || '';
+        const qwenBaseUrlEl = document.getElementById('qwenBaseUrl');
+        if (qwenBaseUrlEl) qwenBaseUrlEl.value = data.QWEN_BASE_URL || '';
+        const qwenOauthBaseUrlEl = document.getElementById('qwenOauthBaseUrl');
+        if (qwenOauthBaseUrlEl) qwenOauthBaseUrlEl.value = data.QWEN_OAUTH_BASE_URL || '';
         
         // OpenAI Responses
         const openaiResponsesApiKeyEl = document.getElementById('openaiResponsesApiKey');
@@ -150,6 +167,13 @@ async function saveConfiguration() {
                 config.GEMINI_OAUTH_CREDS_BASE64 = null;
                 config.GEMINI_OAUTH_CREDS_FILE_PATH = document.getElementById('geminiOauthCredsFilePath')?.value || '';
             }
+            config.GEMINI_BASE_URL = document.getElementById('geminiBaseUrl')?.value || null;
+            break;
+
+        case 'gemini-antigravity':
+            config.ANTIGRAVITY_BASE_URL_DAILY = document.getElementById('antigravityBaseUrlDaily')?.value || null;
+            config.ANTIGRAVITY_BASE_URL_AUTOPUSH = document.getElementById('antigravityBaseUrlAutopush')?.value || null;
+            config.ANTIGRAVITY_OAUTH_CREDS_FILE_PATH = document.getElementById('antigravityOauthCredsFilePath')?.value || '';
             break;
             
         case 'openai-custom':
@@ -171,10 +195,15 @@ async function saveConfiguration() {
                 config.KIRO_OAUTH_CREDS_BASE64 = null;
                 config.KIRO_OAUTH_CREDS_FILE_PATH = document.getElementById('kiroOauthCredsFilePath')?.value || '';
             }
+            config.KIRO_BASE_URL = document.getElementById('kiroBaseUrl')?.value || null;
+            config.KIRO_REFRESH_URL = document.getElementById('kiroRefreshUrl')?.value || null;
+            config.KIRO_REFRESH_IDC_URL = document.getElementById('kiroRefreshIdcUrl')?.value || null;
             break;
             
         case 'openai-qwen-oauth':
             config.QWEN_OAUTH_CREDS_FILE_PATH = document.getElementById('qwenOauthCredsFilePath')?.value || '';
+            config.QWEN_BASE_URL = document.getElementById('qwenBaseUrl')?.value || null;
+            config.QWEN_OAUTH_BASE_URL = document.getElementById('qwenOauthBaseUrl')?.value || null;
             break;
             
         case 'openaiResponses-custom':
@@ -205,26 +234,26 @@ async function saveConfiguration() {
                 // 清空密码输入框
                 const adminPasswordEl = document.getElementById('adminPassword');
                 if (adminPasswordEl) adminPasswordEl.value = '';
-                showToast('后台密码已更新，下次登录生效', 'success');
+                showToast(t('common.success'), t('common.passwordUpdated'), 'success');
             } catch (pwdError) {
                 console.error('Failed to save admin password:', pwdError);
-                showToast('保存后台密码失败: ' + pwdError.message, 'error');
+                showToast(t('common.error'), t('common.error') + ': ' + pwdError.message, 'error');
             }
         }
         
         await window.apiClient.post('/reload-config');
-        showToast('配置已保存', 'success');
+        showToast(t('common.success'), t('common.configSaved'), 'success');
         
         // 检查当前是否在提供商池管理页面，如果是则刷新数据
         const providersSection = document.getElementById('providers');
         if (providersSection && providersSection.classList.contains('active')) {
             // 当前在提供商池页面，刷新数据
             await loadProviders();
-            showToast('提供商池数据已刷新', 'success');
+            showToast(t('common.success'), t('common.providerPoolRefreshed'), 'success');
         }
     } catch (error) {
         console.error('Failed to save configuration:', error);
-        showToast('保存配置失败: ' + error.message, 'error');
+        showToast(t('common.error'), t('common.error') + ': ' + error.message, 'error');
     }
 }
 

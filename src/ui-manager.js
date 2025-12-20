@@ -3,6 +3,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import multer from 'multer';
 import crypto from 'crypto';
+import AdmZip from 'adm-zip';
 import { getRequestBody } from './common.js';
 import { getAllProviderModels, getProviderModels } from './provider-models.js';
 import { CONFIG } from './config-manager.js';
@@ -628,6 +629,16 @@ export async function handleUIApiRequests(method, pathParam, req, res, currentCo
             if (newConfig.KIRO_OAUTH_CREDS_BASE64 !== undefined) currentConfig.KIRO_OAUTH_CREDS_BASE64 = newConfig.KIRO_OAUTH_CREDS_BASE64;
             if (newConfig.KIRO_OAUTH_CREDS_FILE_PATH !== undefined) currentConfig.KIRO_OAUTH_CREDS_FILE_PATH = newConfig.KIRO_OAUTH_CREDS_FILE_PATH;
             if (newConfig.QWEN_OAUTH_CREDS_FILE_PATH !== undefined) currentConfig.QWEN_OAUTH_CREDS_FILE_PATH = newConfig.QWEN_OAUTH_CREDS_FILE_PATH;
+            
+            // New Provider URLs
+            if (newConfig.QWEN_BASE_URL !== undefined) currentConfig.QWEN_BASE_URL = newConfig.QWEN_BASE_URL;
+            if (newConfig.QWEN_OAUTH_BASE_URL !== undefined) currentConfig.QWEN_OAUTH_BASE_URL = newConfig.QWEN_OAUTH_BASE_URL;
+            if (newConfig.GEMINI_BASE_URL !== undefined) currentConfig.GEMINI_BASE_URL = newConfig.GEMINI_BASE_URL;
+            if (newConfig.ANTIGRAVITY_BASE_URL_DAILY !== undefined) currentConfig.ANTIGRAVITY_BASE_URL_DAILY = newConfig.ANTIGRAVITY_BASE_URL_DAILY;
+            if (newConfig.ANTIGRAVITY_BASE_URL_AUTOPUSH !== undefined) currentConfig.ANTIGRAVITY_BASE_URL_AUTOPUSH = newConfig.ANTIGRAVITY_BASE_URL_AUTOPUSH;
+            if (newConfig.KIRO_REFRESH_URL !== undefined) currentConfig.KIRO_REFRESH_URL = newConfig.KIRO_REFRESH_URL;
+            if (newConfig.KIRO_REFRESH_IDC_URL !== undefined) currentConfig.KIRO_REFRESH_IDC_URL = newConfig.KIRO_REFRESH_IDC_URL;
+            if (newConfig.KIRO_BASE_URL !== undefined) currentConfig.KIRO_BASE_URL = newConfig.KIRO_BASE_URL;
             if (newConfig.SYSTEM_PROMPT_FILE_PATH !== undefined) currentConfig.SYSTEM_PROMPT_FILE_PATH = newConfig.SYSTEM_PROMPT_FILE_PATH;
             if (newConfig.SYSTEM_PROMPT_MODE !== undefined) currentConfig.SYSTEM_PROMPT_MODE = newConfig.SYSTEM_PROMPT_MODE;
             if (newConfig.PROMPT_LOG_BASE_NAME !== undefined) currentConfig.PROMPT_LOG_BASE_NAME = newConfig.PROMPT_LOG_BASE_NAME;
@@ -680,6 +691,17 @@ export async function handleUIApiRequests(method, pathParam, req, res, currentCo
                     KIRO_OAUTH_CREDS_BASE64: currentConfig.KIRO_OAUTH_CREDS_BASE64,
                     KIRO_OAUTH_CREDS_FILE_PATH: currentConfig.KIRO_OAUTH_CREDS_FILE_PATH,
                     QWEN_OAUTH_CREDS_FILE_PATH: currentConfig.QWEN_OAUTH_CREDS_FILE_PATH,
+                    // Provider URLs
+                    QWEN_BASE_URL: currentConfig.QWEN_BASE_URL,
+                    QWEN_OAUTH_BASE_URL: currentConfig.QWEN_OAUTH_BASE_URL,
+                    GEMINI_BASE_URL: currentConfig.GEMINI_BASE_URL,
+                    ANTIGRAVITY_BASE_URL_DAILY: currentConfig.ANTIGRAVITY_BASE_URL_DAILY,
+                    ANTIGRAVITY_BASE_URL_AUTOPUSH: currentConfig.ANTIGRAVITY_BASE_URL_AUTOPUSH,
+                    KIRO_REFRESH_URL: currentConfig.KIRO_REFRESH_URL,
+                    KIRO_REFRESH_IDC_URL: currentConfig.KIRO_REFRESH_IDC_URL,
+                    KIRO_BASE_URL: currentConfig.KIRO_BASE_URL,
+                    KIRO_AMAZON_Q_URL: currentConfig.KIRO_AMAZON_Q_URL,
+                    KIRO_USAGE_LIMITS_URL: currentConfig.KIRO_USAGE_LIMITS_URL,
                     SYSTEM_PROMPT_FILE_PATH: currentConfig.SYSTEM_PROMPT_FILE_PATH,
                     SYSTEM_PROMPT_MODE: currentConfig.SYSTEM_PROMPT_MODE,
                     PROMPT_LOG_BASE_NAME: currentConfig.PROMPT_LOG_BASE_NAME,
@@ -1329,17 +1351,25 @@ export async function handleUIApiRequests(method, pathParam, req, res, currentCo
             let authUrl = '';
             let authInfo = {};
             
+            // 解析 options
+            let options = {};
+            try {
+                options = await getRequestBody(req);
+            } catch (e) {
+                // 如果没有请求体，使用默认空对象
+            }
+
             // 根据提供商类型生成授权链接并启动回调服务器
             if (providerType === 'gemini-cli-oauth') {
-                const result = await handleGeminiCliOAuth(currentConfig);
+                const result = await handleGeminiCliOAuth(currentConfig, options);
                 authUrl = result.authUrl;
                 authInfo = result.authInfo;
             } else if (providerType === 'gemini-antigravity') {
-                const result = await handleGeminiAntigravityOAuth(currentConfig);
+                const result = await handleGeminiAntigravityOAuth(currentConfig, options);
                 authUrl = result.authUrl;
                 authInfo = result.authInfo;
             } else if (providerType === 'openai-qwen-oauth') {
-                const result = await handleQwenOAuth(currentConfig);
+                const result = await handleQwenOAuth(currentConfig, options);
                 authUrl = result.authUrl;
                 authInfo = result.authInfo;
             } else {
@@ -1532,6 +1562,60 @@ export async function handleUIApiRequests(method, pathParam, req, res, currentCo
             res.end(JSON.stringify({
                 error: {
                     message: 'Failed to delete config file: ' + error.message
+                }
+            }));
+            return true;
+        }
+    }
+
+    // Download all configs as zip
+    if (method === 'GET' && pathParam === '/api/upload-configs/download-all') {
+        try {
+            const configsPath = path.join(process.cwd(), 'configs');
+            if (!existsSync(configsPath)) {
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: { message: 'configs目录不存在' } }));
+                return true;
+            }
+
+            const zip = new AdmZip();
+            
+            // 递归添加目录函数
+            const addDirectoryToZip = async (dirPath, zipPath = '') => {
+                const items = await fs.readdir(dirPath, { withFileTypes: true });
+                for (const item of items) {
+                    const fullPath = path.join(dirPath, item.name);
+                    const itemZipPath = zipPath ? path.join(zipPath, item.name) : item.name;
+                    
+                    if (item.isFile()) {
+                        const content = await fs.readFile(fullPath);
+                        zip.addFile(itemZipPath.replace(/\\/g, '/'), content);
+                    } else if (item.isDirectory()) {
+                        await addDirectoryToZip(fullPath, itemZipPath);
+                    }
+                }
+            };
+
+            await addDirectoryToZip(configsPath);
+            
+            const zipBuffer = zip.toBuffer();
+            const filename = `configs_backup_${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
+
+            res.writeHead(200, {
+                'Content-Type': 'application/zip',
+                'Content-Disposition': `attachment; filename="${filename}"`,
+                'Content-Length': zipBuffer.length
+            });
+            res.end(zipBuffer);
+            
+            console.log(`[UI API] All configs downloaded as zip: ${filename}`);
+            return true;
+        } catch (error) {
+            console.error('[UI API] Failed to download all configs:', error);
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                error: {
+                    message: '打包下载失败: ' + error.message
                 }
             }));
             return true;
