@@ -9,7 +9,7 @@ import { getAllProviderModels, getProviderModels } from './provider-models.js';
 import { CONFIG } from './config-manager.js';
 import { serviceInstances, getServiceAdapter } from './adapter.js';
 import { initApiService } from './service-manager.js';
-import { handleGeminiCliOAuth, handleGeminiAntigravityOAuth, handleQwenOAuth } from './oauth-handlers.js';
+import { handleGeminiCliOAuth, handleGeminiAntigravityOAuth, handleQwenOAuth, handleKiroOAuth } from './oauth-handlers.js';
 import {
     generateUUID,
     normalizePath,
@@ -1372,6 +1372,12 @@ export async function handleUIApiRequests(method, pathParam, req, res, currentCo
                 const result = await handleQwenOAuth(currentConfig, options);
                 authUrl = result.authUrl;
                 authInfo = result.authInfo;
+            } else if (providerType === 'claude-kiro-oauth') {
+                // Kiro OAuth 支持多种认证方式
+                // options.method 可以是: 'google' | 'github' | 'builder-id'
+                const result = await handleKiroOAuth(currentConfig, options);
+                authUrl = result.authUrl;
+                authInfo = result.authInfo;
             } else {
                 res.writeHead(400, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({
@@ -1881,7 +1887,17 @@ export function initializeUIManagement() {
     const originalLog = console.log;
     console.log = function(...args) {
         originalLog.apply(console, args);
-        const message = args.map(arg => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' ');
+        const message = args.map(arg => {
+            if (typeof arg === 'string') return arg;
+            try {
+                return JSON.stringify(arg);
+            } catch (e) {
+                if (arg instanceof Error) {
+                    return `[Error: ${arg.message}] ${arg.stack || ''}`;
+                }
+                return `[Object: ${Object.prototype.toString.call(arg)}] (Circular or too complex to stringify)`;
+            }
+        }).join(' ');
         const logEntry = {
             timestamp: new Date().toISOString(),
             level: 'info',
@@ -1898,7 +1914,17 @@ export function initializeUIManagement() {
     const originalError = console.error;
     console.error = function(...args) {
         originalError.apply(console, args);
-        const message = args.map(arg => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' ');
+        const message = args.map(arg => {
+            if (typeof arg === 'string') return arg;
+            try {
+                return JSON.stringify(arg);
+            } catch (e) {
+                if (arg instanceof Error) {
+                    return `[Error: ${arg.message}] ${arg.stack || ''}`;
+                }
+                return `[Object: ${Object.prototype.toString.call(arg)}] (Circular or too complex to stringify)`;
+            }
+        }).join(' ');
         const logEntry = {
             timestamp: new Date().toISOString(),
             level: 'error',
