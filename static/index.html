@@ -17,9 +17,15 @@
             <div class="header-content">
                 <h1><i class="fas fa-robot"></i> <span class="header-title" data-i18n="header.title">AIClient2API 管理控制台</span></h1>
                 <div class="header-controls">
+                    <a href="https://pay.ldxp.cn/shop/N0IK02WR" target="_blank" rel="noopener noreferrer" class="kiro-buy-link" title="KIRO账号购买">
+                        <i class="fas fa-shopping-cart"></i> <span>KIRO账号购买</span>
+                    </a>
                     <span class="status-badge" id="serverStatus">
                         <i class="fas fa-circle"></i> <span class="status-text" data-i18n="header.status.connecting">连接中...</span>
                     </span>
+                    <a href="https://github.com/justlovemaki/AIClient-2-API" target="_blank" rel="noopener noreferrer" class="github-link" title="GitHub" data-i18n-title="header.github">
+                        <i class="fab fa-github"></i>
+                    </a>
                     <button id="themeToggleBtn" class="theme-toggle" aria-label="Toggle Theme" data-i18n-aria-label="header.themeToggle" title="切换主题" data-i18n-title="header.themeToggle">
                         <i class="fas fa-moon"></i>
                         <i class="fas fa-sun"></i>
@@ -53,6 +59,9 @@
                     </a>
                     <a href="#usage" class="nav-item" data-section="usage" aria-label="Usage Query" data-i18n-aria-label="nav.usage">
                         <i class="fas fa-chart-bar" aria-hidden="true"></i> <span data-i18n="nav.usage">用量查询</span>
+                    </a>
+                    <a href="#plugins" class="nav-item" data-section="plugins" aria-label="Plugin Management" data-i18n-aria-label="nav.plugins">
+                        <i class="fas fa-puzzle-piece" aria-hidden="true"></i> <span data-i18n="nav.plugins">插件管理</span>
                     </a>
                     <a href="#logs" class="nav-item" data-section="logs" aria-label="Real-time Logs" data-i18n-aria-label="nav.logs">
                         <i class="fas fa-file-alt" aria-hidden="true"></i> <span data-i18n="nav.logs">实时日志</span>
@@ -507,6 +516,59 @@
                                 </div>
                             </div>
 
+                            <div class="routing-example-card" data-provider="openai-iflow-card">
+                                <div class="routing-card-header">
+                                    <i class="fas fa-wind"></i>
+                                    <h4 data-i18n="dashboard.routing.nodeName.iflow">iFlow OAuth</h4>
+                                    <span class="provider-badge oauth" data-i18n="dashboard.routing.oauth">突破限制</span>
+                                </div>
+                                <div class="routing-card-content">
+                                    <!-- 协议标签切换 -->
+                                    <div class="protocol-tabs">
+                                        <button class="protocol-tab" data-protocol="openai" data-i18n="dashboard.routing.openai">OpenAI协议</button>
+                                        <button class="protocol-tab active" data-protocol="claude" data-i18n="dashboard.routing.claude">Claude协议</button>
+                                    </div>
+                                    
+                                    <!-- OpenAI协议示例 -->
+                                    <div class="protocol-content" data-protocol="openai">
+                                        <div class="endpoint-info">
+                                            <label data-i18n="dashboard.routing.endpoint">端点路径:</label>
+                                            <code class="endpoint-path">/openai-iflow/v1/chat/completions</code>
+                                        </div>
+                                        <div class="usage-example">
+                                            <label data-i18n="dashboard.routing.exampleOpenAI">使用示例 (OpenAI格式):</label>
+                                            <pre><code>curl http://localhost:3000/openai-iflow/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -d '{
+    "model": "qwen3-max",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "max_tokens": 1000
+  }'</code></pre>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Claude协议示例 -->
+                                    <div class="protocol-content active" data-protocol="claude">
+                                        <div class="endpoint-info">
+                                            <label data-i18n="dashboard.routing.endpoint">端点路径:</label>
+                                            <code class="endpoint-path">/openai-iflow/v1/messages</code>
+                                        </div>
+                                        <div class="usage-example">
+                                            <label data-i18n="dashboard.routing.exampleClaude">使用示例 (Claude格式):</label>
+                                            <pre><code>curl http://localhost:3000/openai-iflow/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -d '{
+    "model": "qwen3-max",
+    "max_tokens": 1000,
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'</code></pre>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
                         </div>
 
                         <div class="routing-tips">
@@ -545,7 +607,7 @@
                                     <input type="number" id="port" class="form-control" value="3000">
                                 </div>
                             </div>
-                            <div class="form-group">
+                            <div class="form-group pool-section">
                                 <label data-i18n="config.modelProvider">模型提供商 (可多选)</label>
                                 <div id="modelProvider" class="provider-checklist">
                                     <label class="checkbox-item">
@@ -576,8 +638,12 @@
                                         <input type="checkbox" value="openaiResponses-custom">
                                         <span>OpenAI Responses</span>
                                     </label>
+                                    <label class="checkbox-item">
+                                        <input type="checkbox" value="openai-iflow">
+                                        <span>iFlow OAuth</span>
+                                    </label>
                                 </div>
-                                <small class="form-text text-muted" data-i18n="config.modelProviderHelp">勾选启动时初始化的模型提供商 (必须至少勾选一个)</small>
+                                <small class="form-text" data-i18n="config.modelProviderHelp">勾选启动时初始化的模型提供商 (必须至少勾选一个)</small>
                             </div>
                             
                             <!-- 高级配置区域 -->
@@ -592,7 +658,7 @@
                                         <input type="text" id="proxyUrl" class="form-control" data-i18n-placeholder="config.proxy.urlPlaceholder" placeholder="例如: http://127.0.0.1:7890 或 socks5://127.0.0.1:1080">
                                         <small class="form-text" data-i18n="config.proxy.urlNote">支持 HTTP、HTTPS 和 SOCKS5 代理，留空则不使用代理</small>
                                     </div>
-                                    <div class="form-group">
+                                    <div class="form-group pool-section">
                                         <label data-i18n="config.proxy.enabledProviders">启用代理的提供商</label>
                                         <div id="proxyProviders" class="provider-checklist">
                                             <label class="checkbox-item">
@@ -604,6 +670,14 @@
                                                 <span>Gemini Antigravity</span>
                                             </label>
                                             <label class="checkbox-item">
+                                                <input type="checkbox" name="proxyProvider" value="openai-custom">
+                                                <span>OpenAI Custom</span>
+                                            </label>
+                                            <label class="checkbox-item">
+                                                <input type="checkbox" name="proxyProvider" value="claude-custom">
+                                                <span>Claude Custom</span>
+                                            </label>
+                                            <label class="checkbox-item">
                                                 <input type="checkbox" name="proxyProvider" value="claude-kiro-oauth">
                                                 <span>Claude Kiro OAuth</span>
                                             </label>
@@ -612,12 +686,12 @@
                                                 <span>Qwen OAuth</span>
                                             </label>
                                             <label class="checkbox-item">
-                                                <input type="checkbox" name="proxyProvider" value="openai-custom">
-                                                <span>OpenAI Custom</span>
+                                                <input type="checkbox" name="proxyProvider" value="openaiResponses-custom">
+                                                <span>OpenAI Responses</span>
                                             </label>
                                             <label class="checkbox-item">
-                                                <input type="checkbox" name="proxyProvider" value="claude-custom">
-                                                <span>Claude Custom</span>
+                                                <input type="checkbox" name="proxyProvider" value="openai-iflow">
+                                                <span>iFlow OAuth</span>
                                             </label>
                                         </div>
                                         <small class="form-text" data-i18n="config.proxy.enabledProvidersNote">选择需要通过代理访问的提供商，未选中的提供商将直接连接</small>
@@ -699,6 +773,18 @@
   "claude-kiro-oauth": ["claude-custom"]
 }'></textarea>
                                     <small class="form-text" data-i18n="config.advanced.fallbackChainNote">当某一 Provider Type 所有账号都不健康时，自动切换到配置的 Fallback 类型。JSON 格式，键为主类型，值为 Fallback 类型数组（按优先级排序）</small>
+                                </div>
+                                
+                                <div class="form-group pool-section">
+                                    <label for="modelFallbackMapping" data-i18n="config.advanced.modelFallbackMapping">跨协议模型 Fallback 映射</label>
+                                    <textarea id="modelFallbackMapping" class="form-control" rows="6" data-i18n-placeholder="config.advanced.modelFallbackMappingPlaceholder" placeholder='例如:
+{
+  "gemini-claude-opus-4-5-thinking": {
+    "targetProviderType": "claude-kiro-oauth",
+    "targetModel": "claude-opus-4-5"
+  }
+}'></textarea>
+                                    <small class="form-text" data-i18n="config.advanced.modelFallbackMappingNote">当主 Provider 不可用时，根据模型名映射到其他协议的 Provider 和模型。JSON 格式。</small>
                                 </div>
                                 
                                 <!-- 系统提示配置移到最下面 -->
@@ -882,6 +968,73 @@
                     </div>
                 </section>
 
+                <!-- Plugins Section -->
+                <section id="plugins" class="section" aria-labelledby="plugins-title">
+                    <h2 id="plugins-title" data-i18n="plugins.title">插件管理</h2>
+                    <div class="plugins-panel">
+                        <div class="plugins-description">
+                            <div class="highlight-note">
+                                <i class="fas fa-info-circle"></i>
+                                <span data-i18n="plugins.description">插件系统允许您扩展系统功能，启用或禁用插件需要重启服务才能生效</span>
+                            </div>
+                        </div>
+                        
+                        <!-- 插件统计 -->
+                        <div class="stats-grid plugins-stats">
+                            <div class="stat-card">
+                                <div class="stat-icon">
+                                    <i class="fas fa-puzzle-piece"></i>
+                                </div>
+                                <div class="stat-info">
+                                    <h3 id="totalPlugins">0</h3>
+                                    <p data-i18n="plugins.stats.total">总插件数</p>
+                                </div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-icon">
+                                    <i class="fas fa-check-circle"></i>
+                                </div>
+                                <div class="stat-info">
+                                    <h3 id="enabledPlugins">0</h3>
+                                    <p data-i18n="plugins.stats.enabled">已启用</p>
+                                </div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-icon">
+                                    <i class="fas fa-times-circle"></i>
+                                </div>
+                                <div class="stat-info">
+                                    <h3 id="disabledPlugins">0</h3>
+                                    <p data-i18n="plugins.stats.disabled">已禁用</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 插件操作按钮 -->
+                        <div class="plugins-controls">
+                            <button class="btn btn-primary" id="refreshPluginsBtn" aria-label="Refresh Plugins" data-i18n-aria-label="plugins.refresh">
+                                <i class="fas fa-sync-alt"></i> <span data-i18n="plugins.refresh">刷新插件列表</span>
+                            </button>
+                        </div>
+                        
+                        <!-- 插件加载状态 -->
+                        <div class="plugins-loading" id="pluginsLoading" style="display: none;">
+                            <i class="fas fa-spinner fa-spin"></i> <span data-i18n="plugins.loading">正在加载插件列表...</span>
+                        </div>
+                        
+                        <!-- 插件列表 -->
+                        <div class="plugins-list-container">
+                            <div id="pluginsList" class="plugins-list">
+                                <!-- 插件列表将在这里动态生成 -->
+                            </div>
+                            <div class="plugins-empty" id="pluginsEmpty">
+                                <i class="fas fa-puzzle-piece"></i>
+                                <p data-i18n="plugins.empty">暂无已安装的插件</p>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
             </main>
         </div>
     </div>
@@ -972,4 +1125,3 @@
     <script type="module" src="app/app.js"></script>
 </body>
 </html>
-

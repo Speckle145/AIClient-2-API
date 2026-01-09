@@ -4,6 +4,44 @@ import * as http from 'http'; // Add http for IncomingMessage and ServerResponse
 import * as crypto from 'crypto'; // Import crypto for MD5 hashing
 import { convertData, getOpenAIStreamChunkStop } from './convert.js';
 import { ProviderStrategyFactory } from './provider-strategies.js';
+import { getPluginManager } from './plugin-manager.js';
+
+// ==================== 网络错误处理 ====================
+
+/**
+ * 可重试的网络错误标识列表
+ * 这些错误可能出现在 error.code 或 error.message 中
+ */
+export const RETRYABLE_NETWORK_ERRORS = [
+    'ECONNRESET',      // 连接被重置
+    'ETIMEDOUT',       // 连接超时
+    'ECONNREFUSED',    // 连接被拒绝
+    'ENOTFOUND',       // DNS 解析失败
+    'ENETUNREACH',     // 网络不可达
+    'EHOSTUNREACH',    // 主机不可达
+    'EPIPE',           // 管道破裂
+    'EAI_AGAIN',       // DNS 临时失败
+    'ECONNABORTED',    // 连接中止
+    'ESOCKETTIMEDOUT', // Socket 超时
+];
+
+/**
+ * 检查是否为可重试的网络错误
+ * @param {Error} error - 错误对象
+ * @returns {boolean} - 是否为可重试的网络错误
+ */
+export function isRetryableNetworkError(error) {
+    if (!error) return false;
+    
+    const errorCode = error.code || '';
+    const errorMessage = error.message || '';
+    
+    return RETRYABLE_NETWORK_ERRORS.some(errId =>
+        errorCode === errId || errorMessage.includes(errId)
+    );
+}
+
+// ==================== API 常量 ====================
 
 export const API_ACTIONS = {
     GENERATE_CONTENT: 'generateContent',
@@ -28,6 +66,7 @@ export const MODEL_PROVIDER = {
     CLAUDE_CUSTOM: 'claude-custom',
     KIRO_API: 'claude-kiro-oauth',
     QWEN_API: 'openai-qwen-oauth',
+    IFLOW_API: 'openai-iflow',
 }
 
 /**
@@ -177,7 +216,7 @@ export async function handleUnifiedResponse(res, responsePayload, isStream) {
     }
 }
 
-export async function handleStreamRequest(res, service, model, requestBody, fromProvider, toProvider, PROMPT_LOG_MODE, PROMPT_LOG_FILENAME, providerPoolManager, pooluuid) {
+export async function handleStreamRequest(res, service, model, requestBody, fromProvider, toProvider, PROMPT_LOG_MODE, PROMPT_LOG_FILENAME, providerPoolManager, pooluuid, customName) {
     let fullResponseText = '';
     let fullResponseJson = '';
     let fullOldResponseJson = '';
@@ -234,7 +273,8 @@ export async function handleStreamRequest(res, service, model, requestBody, from
 
         // 流式请求成功完成，统计使用次数，错误次数重置为0
         if (providerPoolManager && pooluuid) {
-            console.log(`[Provider Pool] Increasing usage count for ${toProvider} (${pooluuid}) after successful stream request`);
+            const customNameDisplay = customName ? `, ${customName}` : '';
+            console.log(`[Provider Pool] Increasing usage count for ${toProvider} (${pooluuid}${customNameDisplay}) after successful stream request`);
             providerPoolManager.markProviderHealthy(toProvider, {
                 uuid: pooluuid
             });
@@ -266,7 +306,7 @@ export async function handleStreamRequest(res, service, model, requestBody, from
 }
 
 
-export async function handleUnaryRequest(res, service, model, requestBody, fromProvider, toProvider, PROMPT_LOG_MODE, PROMPT_LOG_FILENAME, providerPoolManager, pooluuid) {
+export async function handleUnaryRequest(res, service, model, requestBody, fromProvider, toProvider, PROMPT_LOG_MODE, PROMPT_LOG_FILENAME, providerPoolManager, pooluuid, customName) {
     try{
         // The service returns the response in its native format (toProvider).
         const needsConversion = getProtocolPrefix(fromProvider) !== getProtocolPrefix(toProvider);
@@ -289,7 +329,8 @@ export async function handleUnaryRequest(res, service, model, requestBody, fromP
         
         // 一元请求成功完成，统计使用次数，错误次数重置为0
         if (providerPoolManager && pooluuid) {
-            console.log(`[Provider Pool] Increasing usage count for ${toProvider} (${pooluuid}) after successful unary request`);
+            const customNameDisplay = customName ? `, ${customName}` : '';
+            console.log(`[Provider Pool] Increasing usage count for ${toProvider} (${pooluuid}${customNameDisplay}) after successful unary request`);
             providerPoolManager.markProviderHealthy(toProvider, {
                 uuid: pooluuid
             });
@@ -393,12 +434,14 @@ export async function handleContentGenerationRequest(req, res, service, endpoint
     }
 
     // 2. Extract model and determine if the request is for streaming.
-    const { model, isStream } = _extractModelAndStreamInfo(req, originalRequestBody, fromProvider);
+    let { model, isStream } = _extractModelAndStreamInfo(req, originalRequestBody, fromProvider);
 
     if (!model) {
         throw new Error("Could not determine the model from the request.");
     }
     console.log(`[Content Generation] Model: ${model}, Stream: ${isStream}`);
+
+    let actualCustomName = CONFIG.customName;
 
     // 2.5. 如果使用了提供商池，根据模型重新选择提供商（支持 Fallback）
     // 注意：这里使用 skipUsageCount: true，因为初次选择时已经增加了 usageCount
@@ -409,7 +452,14 @@ export async function handleContentGenerationRequest(req, res, service, endpoint
         service = result.service;
         toProvider = result.actualProviderType;
         actualUuid = result.uuid || pooluuid;
+        actualCustomName = result.serviceConfig?.customName || CONFIG.customName;
         
+        // 如果发生了模型级别的 fallback，需要更新请求使用的模型
+        if (result.actualModel && result.actualModel !== model) {
+            console.log(`[Content Generation] Model Fallback: ${model} -> ${result.actualModel}`);
+            model = result.actualModel;
+        }
+
         if (result.isFallback) {
             console.log(`[Content Generation] Fallback activated: ${CONFIG.MODEL_PROVIDER} -> ${toProvider} (uuid: ${actualUuid})`);
         } else {
@@ -437,10 +487,16 @@ export async function handleContentGenerationRequest(req, res, service, endpoint
     
     // 5. Call the appropriate stream or unary handler, passing the provider info.
     if (isStream) {
-        await handleStreamRequest(res, service, model, processedRequestBody, fromProvider, toProvider, CONFIG.PROMPT_LOG_MODE, PROMPT_LOG_FILENAME, providerPoolManager, actualUuid);
+        await handleStreamRequest(res, service, model, processedRequestBody, fromProvider, toProvider, CONFIG.PROMPT_LOG_MODE, PROMPT_LOG_FILENAME, providerPoolManager, actualUuid, actualCustomName);
     } else {
-        await handleUnaryRequest(res, service, model, processedRequestBody, fromProvider, toProvider, CONFIG.PROMPT_LOG_MODE, PROMPT_LOG_FILENAME, providerPoolManager, actualUuid);
+        await handleUnaryRequest(res, service, model, processedRequestBody, fromProvider, toProvider, CONFIG.PROMPT_LOG_MODE, PROMPT_LOG_FILENAME, providerPoolManager, actualUuid, actualCustomName);
     }
+
+    // 执行插件钩子：内容生成后
+    try {
+        const pluginManager = getPluginManager();
+        await pluginManager.executeHook('onContentGenerated', CONFIG);
+    } catch (e) { /* 静默失败，不影响主流程 */ }
 }
 
 /**
@@ -476,58 +532,49 @@ export function extractPromptText(requestBody, provider) {
     return strategy.extractPromptText(requestBody);
 }
 
-export function handleError(res, error) {
-    const statusCode = error.response?.status || 500;
+export function handleError(res, error, provider = null) {
+    const statusCode = error.response?.status || error.statusCode || error.status || error.code || 500;
     let errorMessage = error.message;
     let suggestions = [];
 
+    // 仅在没有传入错误信息时，才使用默认消息；否则只添加建议
+    const hasOriginalMessage = error.message && error.message.trim() !== '';
+
+    // 根据提供商获取适配的错误信息和建议
+    const providerSuggestions = _getProviderSpecificSuggestions(statusCode, provider);
+    
     // Provide detailed information and suggestions for different error types
     switch (statusCode) {
         case 401:
             errorMessage = 'Authentication failed. Please check your credentials.';
-            suggestions = [
-                'Verify your OAuth credentials are valid',
-                'Try re-authenticating by deleting the credentials file',
-                'Check if your Google Cloud project has the necessary permissions'
-            ];
+            suggestions = providerSuggestions.auth;
             break;
         case 403:
             errorMessage = 'Access forbidden. Insufficient permissions.';
-            suggestions = [
-                'Ensure your Google Cloud project has the Code Assist API enabled',
-                'Check if your account has the necessary permissions',
-                'Verify the project ID is correct'
-            ];
+            suggestions = providerSuggestions.permission;
             break;
         case 429:
             errorMessage = 'Too many requests. Rate limit exceeded.';
-            suggestions = [
-                'The request has been automatically retried with exponential backoff',
-                'If the issue persists, try reducing the request frequency',
-                'Consider upgrading your API quota if available'
-            ];
+            suggestions = providerSuggestions.rateLimit;
             break;
         case 500:
         case 502:
         case 503:
         case 504:
             errorMessage = 'Server error occurred. This is usually temporary.';
-            suggestions = [
-                'The request has been automatically retried',
-                'If the issue persists, try again in a few minutes',
-                'Check Google Cloud status page for service outages'
-            ];
+            suggestions = providerSuggestions.serverError;
             break;
         default:
             if (statusCode >= 400 && statusCode < 500) {
                 errorMessage = `Client error (${statusCode}): ${error.message}`;
-                suggestions = ['Check your request format and parameters'];
+                suggestions = providerSuggestions.clientError;
             } else if (statusCode >= 500) {
                 errorMessage = `Server error (${statusCode}): ${error.message}`;
-                suggestions = ['This is a server-side issue, please try again later'];
+                suggestions = providerSuggestions.serverError;
             }
     }
 
+    errorMessage = hasOriginalMessage ? error.message.trim() : errorMessage;
     console.error(`\n[Server] Request failed (${statusCode}): ${errorMessage}`);
     if (suggestions.length > 0) {
         console.error('[Server] Suggestions:');
@@ -550,6 +597,168 @@ export function handleError(res, error) {
         }
     };
     res.end(JSON.stringify(errorPayload));
+}
+
+/**
+ * 根据提供商类型获取适配的错误建议
+ * @param {number} statusCode - HTTP 状态码
+ * @param {string|null} provider - 提供商类型
+ * @returns {Object} 包含各类错误建议的对象
+ */
+function _getProviderSpecificSuggestions(statusCode, provider) {
+    const protocolPrefix = provider ? getProtocolPrefix(provider) : null;
+    
+    // 默认/通用建议
+    const defaultSuggestions = {
+        auth: [
+            'Verify your API key or credentials are valid',
+            'Check if your credentials have expired',
+            'Ensure the API key has the necessary permissions'
+        ],
+        permission: [
+            'Check if your account has the necessary permissions',
+            'Verify the API endpoint is accessible with your credentials',
+            'Contact your administrator if permissions are restricted'
+        ],
+        rateLimit: [
+            'The request has been automatically retried with exponential backoff',
+            'If the issue persists, try reducing the request frequency',
+            'Consider upgrading your API quota if available'
+        ],
+        serverError: [
+            'The request has been automatically retried',
+            'If the issue persists, try again in a few minutes',
+            'Check the service status page for outages'
+        ],
+        clientError: [
+            'Check your request format and parameters',
+            'Verify the model name is correct',
+            'Ensure all required fields are provided'
+        ]
+    };
+    
+    // 根据提供商返回特定建议
+    switch (protocolPrefix) {
+        case MODEL_PROTOCOL_PREFIX.GEMINI:
+            return {
+                auth: [
+                    'Verify your OAuth credentials are valid',
+                    'Try re-authenticating by deleting the credentials file',
+                    'Check if your Google Cloud project has the necessary permissions'
+                ],
+                permission: [
+                    'Ensure your Google Cloud project has the Gemini API enabled',
+                    'Check if your account has the necessary permissions',
+                    'Verify the project ID is correct'
+                ],
+                rateLimit: [
+                    'The request has been automatically retried with exponential backoff',
+                    'If the issue persists, try reducing the request frequency',
+                    'Consider upgrading your Google Cloud API quota'
+                ],
+                serverError: [
+                    'The request has been automatically retried',
+                    'If the issue persists, try again in a few minutes',
+                    'Check Google Cloud status page for service outages'
+                ],
+                clientError: [
+                    'Check your request format and parameters',
+                    'Verify the model name is a valid Gemini model',
+                    'Ensure all required fields are provided'
+                ]
+            };
+            
+        case MODEL_PROTOCOL_PREFIX.OPENAI:
+        case MODEL_PROTOCOL_PREFIX.OPENAI_RESPONSES:
+            return {
+                auth: [
+                    'Verify your OpenAI API key is valid',
+                    'Check if your API key has expired or been revoked',
+                    'Ensure the API key is correctly formatted (starts with sk-)'
+                ],
+                permission: [
+                    'Check if your OpenAI account has access to the requested model',
+                    'Verify your organization settings allow this operation',
+                    'Ensure you have sufficient credits in your account'
+                ],
+                rateLimit: [
+                    'The request has been automatically retried with exponential backoff',
+                    'If the issue persists, try reducing the request frequency',
+                    'Consider upgrading your OpenAI usage tier for higher limits'
+                ],
+                serverError: [
+                    'The request has been automatically retried',
+                    'If the issue persists, try again in a few minutes',
+                    'Check OpenAI status page (status.openai.com) for outages'
+                ],
+                clientError: [
+                    'Check your request format and parameters',
+                    'Verify the model name is a valid OpenAI model',
+                    'Ensure the message format is correct (role and content fields)'
+                ]
+            };
+            
+        case MODEL_PROTOCOL_PREFIX.CLAUDE:
+            return {
+                auth: [
+                    'Verify your Anthropic API key is valid',
+                    'Check if your API key has expired or been revoked',
+                    'Ensure the x-api-key header is correctly set'
+                ],
+                permission: [
+                    'Check if your Anthropic account has access to the requested model',
+                    'Verify your account is in good standing',
+                    'Ensure you have sufficient credits in your account'
+                ],
+                rateLimit: [
+                    'The request has been automatically retried with exponential backoff',
+                    'If the issue persists, try reducing the request frequency',
+                    'Consider upgrading your Anthropic usage tier for higher limits'
+                ],
+                serverError: [
+                    'The request has been automatically retried',
+                    'If the issue persists, try again in a few minutes',
+                    'Check Anthropic status page for service outages'
+                ],
+                clientError: [
+                    'Check your request format and parameters',
+                    'Verify the model name is a valid Claude model',
+                    'Ensure the message format follows Anthropic API specifications'
+                ]
+            };
+            
+        case MODEL_PROTOCOL_PREFIX.OLLAMA:
+            return {
+                auth: [
+                    'Ollama typically does not require authentication',
+                    'If using a custom setup, verify your credentials',
+                    'Check if the Ollama server requires authentication'
+                ],
+                permission: [
+                    'Verify the Ollama server is accessible',
+                    'Check if the requested model is available locally',
+                    'Ensure the Ollama server allows the requested operation'
+                ],
+                rateLimit: [
+                    'The local Ollama server may be overloaded',
+                    'Try reducing concurrent requests',
+                    'Consider increasing server resources if running locally'
+                ],
+                serverError: [
+                    'Check if the Ollama server is running',
+                    'Verify the server address and port are correct',
+                    'Check Ollama server logs for detailed error information'
+                ],
+                clientError: [
+                    'Check your request format and parameters',
+                    'Verify the model name is available in your Ollama installation',
+                    'Try pulling the model first with: ollama pull <model-name>'
+                ]
+            };
+            
+        default:
+            return defaultSuggestions;
+    }
 }
 
 /**

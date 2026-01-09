@@ -56,7 +56,8 @@ import { getAllProviderModels, getProviderModels } from './provider-models.js';
 import { CONFIG } from './config-manager.js';
 import { serviceInstances, getServiceAdapter } from './adapter.js';
 import { initApiService } from './service-manager.js';
-import { handleGeminiCliOAuth, handleGeminiAntigravityOAuth, handleQwenOAuth, handleKiroOAuth } from './oauth-handlers.js';
+import { handleGeminiCliOAuth, handleGeminiAntigravityOAuth, handleQwenOAuth, handleKiroOAuth, handleIFlowOAuth, batchImportKiroRefreshTokens, batchImportKiroRefreshTokensStream, importAwsCredentials } from './oauth-handlers.js';
+import { getPluginManager } from './plugin-manager.js';
 import {
     generateUUID,
     normalizePath,
@@ -518,7 +519,7 @@ export async function handleUIApiRequests(method, pathParam, req, res, currentCo
     }
     
     // Handle UI management API requests (需要token验证，除了登录接口、健康检查和Events接口)
-    if (pathParam.startsWith('/api/') && pathParam !== '/api/login' && pathParam !== '/api/health' && pathParam !== '/api/events') {
+    if (pathParam.startsWith('/api/') && pathParam !== '/api/login' && pathParam !== '/api/health' && pathParam !== '/api/events' ) {
         // 检查token验证
         const isAuth = await checkAuth(req);
         if (!isAuth) {
@@ -539,84 +540,7 @@ export async function handleUIApiRequests(method, pathParam, req, res, currentCo
 
     // 文件上传API
     if (method === 'POST' && pathParam === '/api/upload-oauth-credentials') {
-        const uploadMiddleware = upload.single('file');
-        
-        uploadMiddleware(req, res, async (err) => {
-            if (err) {
-                console.error('[UI API] File upload error:', err.message);
-                res.writeHead(400, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({
-                    error: {
-                        message: err.message || 'File upload failed'
-                    }
-                }));
-                return;
-            }
-
-            try {
-                if (!req.file) {
-                    res.writeHead(400, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({
-                        error: {
-                            message: 'No file was uploaded'
-                        }
-                    }));
-                    return;
-                }
-
-                // multer执行完成后，表单字段已解析到req.body中
-                const provider = req.body.provider || 'common';
-                const tempFilePath = req.file.path;
-                
-                // 根据实际的provider移动文件到正确的目录
-                let targetDir = path.join(process.cwd(), 'configs', provider);
-                
-                // 如果是kiro类型的凭证，需要再包裹一层文件夹
-                if (provider === 'kiro') {
-                    // 使用时间戳作为子文件夹名称，确保每个上传的文件都有独立的目录
-                    const timestamp = Date.now();
-                    const originalNameWithoutExt = path.parse(req.file.originalname).name;
-                    const subFolder = `${timestamp}_${originalNameWithoutExt}`;
-                    targetDir = path.join(targetDir, subFolder);
-                }
-                
-                await fs.mkdir(targetDir, { recursive: true });
-                
-                const targetFilePath = path.join(targetDir, req.file.filename);
-                await fs.rename(tempFilePath, targetFilePath);
-                
-                const relativePath = path.relative(process.cwd(), targetFilePath);
-
-                // 广播更新事件
-                broadcastEvent('config_update', {
-                    action: 'add',
-                    filePath: relativePath,
-                    provider: provider,
-                    timestamp: new Date().toISOString()
-                });
-
-                console.log(`[UI API] OAuth credentials file uploaded: ${targetFilePath} (provider: ${provider})`);
-
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({
-                    success: true,
-                    message: 'File uploaded successfully',
-                    filePath: relativePath,
-                    originalName: req.file.originalname,
-                    provider: provider
-                }));
-
-            } catch (error) {
-                console.error('[UI API] File upload processing error:', error);
-                res.writeHead(500, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({
-                    error: {
-                        message: 'File upload processing failed: ' + error.message
-                    }
-                }));
-            }
-        });
-        return true;
+        return handleUploadOAuthCredentials(req, res);
     }
 
     // Update admin password
@@ -701,6 +625,7 @@ export async function handleUIApiRequests(method, pathParam, req, res, currentCo
             if (newConfig.PROVIDER_POOLS_FILE_PATH !== undefined) currentConfig.PROVIDER_POOLS_FILE_PATH = newConfig.PROVIDER_POOLS_FILE_PATH;
             if (newConfig.MAX_ERROR_COUNT !== undefined) currentConfig.MAX_ERROR_COUNT = newConfig.MAX_ERROR_COUNT;
             if (newConfig.providerFallbackChain !== undefined) currentConfig.providerFallbackChain = newConfig.providerFallbackChain;
+            if (newConfig.modelFallbackMapping !== undefined) currentConfig.modelFallbackMapping = newConfig.modelFallbackMapping;
             
             // Proxy settings
             if (newConfig.PROXY_URL !== undefined) currentConfig.PROXY_URL = newConfig.PROXY_URL;
@@ -748,6 +673,7 @@ export async function handleUIApiRequests(method, pathParam, req, res, currentCo
                     PROVIDER_POOLS_FILE_PATH: currentConfig.PROVIDER_POOLS_FILE_PATH,
                     MAX_ERROR_COUNT: currentConfig.MAX_ERROR_COUNT,
                     providerFallbackChain: currentConfig.providerFallbackChain,
+                    modelFallbackMapping: currentConfig.modelFallbackMapping,
                     PROXY_URL: currentConfig.PROXY_URL,
                     PROXY_ENABLED_PROVIDERS: currentConfig.PROXY_ENABLED_PROVIDERS
                 };
@@ -1311,6 +1237,13 @@ export async function handleUIApiRequests(method, pathParam, req, res, currentCo
             const results = [];
             for (const providerStatus of providers) {
                 const providerConfig = providerStatus.config;
+                
+                // 跳过已禁用的节点
+                if (providerConfig.isDisabled) {
+                    console.log(`[UI API] Skipping health check for disabled provider: ${providerConfig.uuid}`);
+                    continue;
+                }
+
                 try {
                     // 传递 forceCheck = true 强制执行健康检查，忽略 checkHealth 配置
                     const healthResult = await providerPoolManager._checkProviderHealth(providerType, providerConfig, true);
@@ -1431,6 +1364,11 @@ export async function handleUIApiRequests(method, pathParam, req, res, currentCo
                 // Kiro OAuth 支持多种认证方式
                 // options.method 可以是: 'google' | 'github' | 'builder-id'
                 const result = await handleKiroOAuth(currentConfig, options);
+                authUrl = result.authUrl;
+                authInfo = result.authInfo;
+            } else if (providerType === 'openai-iflow') {
+                // iFlow OAuth 授权
+                const result = await handleIFlowOAuth(currentConfig, options);
                 authUrl = result.authUrl;
                 authInfo = result.authInfo;
             } else {
@@ -2112,6 +2050,221 @@ export async function handleUIApiRequests(method, pathParam, req, res, currentCo
         return true;
     }
 
+    // Batch import Kiro refresh tokens with SSE (real-time progress)
+    // 批量导入 Kiro refreshToken（带实时进度 SSE）
+    if (method === 'POST' && pathParam === '/api/kiro/batch-import-tokens') {
+        try {
+            const body = await getRequestBody(req);
+            const { refreshTokens, region } = body;
+            
+            if (!refreshTokens || !Array.isArray(refreshTokens) || refreshTokens.length === 0) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    success: false,
+                    error: 'refreshTokens array is required and must not be empty'
+                }));
+                return true;
+            }
+            
+            console.log(`[Kiro Batch Import] Starting batch import of ${refreshTokens.length} tokens with SSE...`);
+            
+            // 设置 SSE 响应头
+            res.writeHead(200, {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no'
+            });
+            
+            // 发送 SSE 事件的辅助函数
+            const sendSSE = (event, data) => {
+                res.write(`event: ${event}\n`);
+                res.write(`data: ${JSON.stringify(data)}\n\n`);
+            };
+            
+            // 发送开始事件
+            sendSSE('start', { total: refreshTokens.length });
+            
+            // 执行流式批量导入
+            const result = await batchImportKiroRefreshTokensStream(
+                refreshTokens, 
+                region || 'us-east-1',
+                (progress) => {
+                    // 每处理完一个 token 发送进度更新
+                    sendSSE('progress', progress);
+                }
+            );
+            
+            console.log(`[Kiro Batch Import] Completed: ${result.success} success, ${result.failed} failed`);
+            
+            // 发送完成事件
+            sendSSE('complete', {
+                success: true,
+                total: result.total,
+                successCount: result.success,
+                failedCount: result.failed,
+                details: result.details
+            });
+            
+            res.end();
+            return true;
+            
+        } catch (error) {
+            console.error('[Kiro Batch Import] Error:', error);
+            // 如果已经开始发送 SSE，则发送错误事件
+            if (res.headersSent) {
+                res.write(`event: error\n`);
+                res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+                res.end();
+            } else {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    success: false,
+                    error: error.message
+                }));
+            }
+            return true;
+        }
+    }
+
+    // Import AWS SSO credentials for Kiro
+    // 导入 AWS SSO 凭据用于 Kiro
+    if (method === 'POST' && pathParam === '/api/kiro/import-aws-credentials') {
+        try {
+            const body = await getRequestBody(req);
+            const { credentials } = body;
+            
+            if (!credentials || typeof credentials !== 'object') {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    success: false,
+                    error: 'credentials object is required'
+                }));
+                return true;
+            }
+            
+            // 验证必需字段 - 需要四个字段都存在
+            const missingFields = [];
+            if (!credentials.clientId) missingFields.push('clientId');
+            if (!credentials.clientSecret) missingFields.push('clientSecret');
+            if (!credentials.accessToken) missingFields.push('accessToken');
+            if (!credentials.refreshToken) missingFields.push('refreshToken');
+            
+            if (missingFields.length > 0) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    success: false,
+                    error: `Missing required fields: ${missingFields.join(', ')}`
+                }));
+                return true;
+            }
+            
+            console.log('[Kiro AWS Import] Starting AWS credentials import...');
+            
+            const result = await importAwsCredentials(credentials);
+            
+            if (result.success) {
+                console.log(`[Kiro AWS Import] Successfully imported credentials to: ${result.path}`);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    success: true,
+                    path: result.path,
+                    message: 'AWS credentials imported successfully'
+                }));
+            } else {
+                // 重复凭据返回 409 Conflict，其他错误返回 500
+                const statusCode = result.error === 'duplicate' ? 409 : 500;
+                res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    success: false,
+                    error: result.error,
+                    existingPath: result.existingPath || null
+                }));
+            }
+            return true;
+            
+        } catch (error) {
+            console.error('[Kiro AWS Import] Error:', error);
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                success: false,
+                error: error.message
+            }));
+            return true;
+        }
+    }
+
+    // Get plugins list
+    if (method === 'GET' && pathParam === '/api/plugins') {
+        try {
+            const pluginManager = getPluginManager();
+            const plugins = pluginManager.getPluginList();
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ plugins }));
+            return true;
+        } catch (error) {
+            console.error('[UI API] Failed to get plugins:', error);
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                error: {
+                    message: 'Failed to get plugins list: ' + error.message
+                }
+            }));
+            return true;
+        }
+    }
+
+    // Toggle plugin status
+    const togglePluginMatch = pathParam.match(/^\/api\/plugins\/(.+)\/toggle$/);
+    if (method === 'POST' && togglePluginMatch) {
+        try {
+            const pluginName = decodeURIComponent(togglePluginMatch[1]);
+            const body = await getRequestBody(req);
+            const { enabled } = body;
+
+            if (typeof enabled !== 'boolean') {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    error: {
+                        message: 'Enabled status must be a boolean'
+                    }
+                }));
+                return true;
+            }
+
+            const pluginManager = getPluginManager();
+            await pluginManager.setPluginEnabled(pluginName, enabled);
+
+            // 广播更新事件
+            broadcastEvent('plugin_update', {
+                action: 'toggle',
+                pluginName,
+                enabled,
+                timestamp: new Date().toISOString()
+            });
+
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                success: true,
+                message: `Plugin ${pluginName} ${enabled ? 'enabled' : 'disabled'} successfully`,
+                plugin: {
+                    name: pluginName,
+                    enabled
+                }
+            }));
+            return true;
+        } catch (error) {
+            console.error('[UI API] Failed to toggle plugin:', error);
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                error: {
+                    message: 'Failed to toggle plugin: ' + error.message
+                }
+            }));
+            return true;
+        }
+    }
+
     return false;
 }
 
@@ -2220,6 +2373,8 @@ async function scanConfigFiles(currentConfig, providerPoolManager) {
     addToUsedPaths(usedPaths, currentConfig.GEMINI_OAUTH_CREDS_FILE_PATH);
     addToUsedPaths(usedPaths, currentConfig.KIRO_OAUTH_CREDS_FILE_PATH);
     addToUsedPaths(usedPaths, currentConfig.QWEN_OAUTH_CREDS_FILE_PATH);
+    addToUsedPaths(usedPaths, currentConfig.ANTIGRAVITY_OAUTH_CREDS_FILE_PATH);
+    addToUsedPaths(usedPaths, currentConfig.IFLOW_TOKEN_FILE_PATH);
 
     // 使用最新的提供商池数据
     let providerPools = currentConfig.providerPools;
@@ -2235,6 +2390,7 @@ async function scanConfigFiles(currentConfig, providerPoolManager) {
                 addToUsedPaths(usedPaths, provider.KIRO_OAUTH_CREDS_FILE_PATH);
                 addToUsedPaths(usedPaths, provider.QWEN_OAUTH_CREDS_FILE_PATH);
                 addToUsedPaths(usedPaths, provider.ANTIGRAVITY_OAUTH_CREDS_FILE_PATH);
+                addToUsedPaths(usedPaths, provider.IFLOW_TOKEN_FILE_PATH);
             }
         }
     }
@@ -2394,6 +2550,17 @@ function getFileUsageInfo(relativePath, fileName, usedPaths, currentConfig) {
         });
     }
 
+    if (currentConfig.IFLOW_TOKEN_FILE_PATH &&
+        (pathsEqual(relativePath, currentConfig.IFLOW_TOKEN_FILE_PATH) ||
+         pathsEqual(relativePath, currentConfig.IFLOW_TOKEN_FILE_PATH.replace(/\\/g, '/')))) {
+        usageInfo.usageType = 'main_config';
+        usageInfo.usageDetails.push({
+            type: 'Main Config',
+            location: 'iFlow Token file path',
+            configKey: 'IFLOW_TOKEN_FILE_PATH'
+        });
+    }
+
     // 检查提供商池中的使用情况
     if (currentConfig.providerPools) {
         // 使用 flatMap 将双重循环优化为单层循环 O(n)
@@ -2450,6 +2617,18 @@ function getFileUsageInfo(relativePath, fileName, usedPaths, currentConfig) {
                     providerType: providerType,
                     providerIndex: index,
                     configKey: 'ANTIGRAVITY_OAUTH_CREDS_FILE_PATH'
+                });
+            }
+
+            if (provider.IFLOW_TOKEN_FILE_PATH &&
+                (pathsEqual(relativePath, provider.IFLOW_TOKEN_FILE_PATH) ||
+                 pathsEqual(relativePath, provider.IFLOW_TOKEN_FILE_PATH.replace(/\\/g, '/')))) {
+                providerUsages.push({
+                    type: 'Provider Pool',
+                    location: `iFlow Token (node ${index + 1})`,
+                    providerType: providerType,
+                    providerIndex: index,
+                    configKey: 'IFLOW_TOKEN_FILE_PATH'
                 });
             }
             
@@ -2699,7 +2878,8 @@ function getProviderDisplayName(provider, providerType) {
         'claude-kiro-oauth': 'KIRO_OAUTH_CREDS_FILE_PATH',
         'gemini-cli-oauth': 'GEMINI_OAUTH_CREDS_FILE_PATH',
         'gemini-antigravity': 'ANTIGRAVITY_OAUTH_CREDS_FILE_PATH',
-        'openai-qwen-oauth': 'QWEN_OAUTH_CREDS_FILE_PATH'
+        'openai-qwen-oauth': 'QWEN_OAUTH_CREDS_FILE_PATH',
+        'openai-iflow': 'IFLOW_TOKEN_FILE_PATH'
     }[providerType];
 
     if (credPathKey && provider[credPathKey]) {
@@ -2740,7 +2920,57 @@ function compareVersions(v1, v2) {
 }
 
 /**
+ * 通过 GitHub API 获取最新版本
+ * @returns {Promise<string|null>} 最新版本号或 null
+ */
+async function getLatestVersionFromGitHub() {
+    const GITHUB_REPO = 'justlovemaki/AIClient-2-API';
+    const apiUrl = `https://api.github.com/repos/${GITHUB_REPO}/tags`;
+    
+    try {
+        console.log('[Update] Fetching latest version from GitHub API...');
+        const response = await fetch(apiUrl, {
+            headers: {
+                'Accept': 'application/vnd.github.v3+json',
+                'User-Agent': 'AIClient2API-UpdateChecker'
+            },
+            timeout: 10000
+        });
+        
+        if (!response.ok) {
+            throw new Error(`GitHub API returned ${response.status}: ${response.statusText}`);
+        }
+        
+        const tags = await response.json();
+        
+        if (!Array.isArray(tags) || tags.length === 0) {
+            return null;
+        }
+        
+        // 提取版本号并排序
+        const versions = tags
+            .map(tag => tag.name)
+            .filter(name => /^v?\d+\.\d+/.test(name)); // 只保留符合版本号格式的 tag
+        
+        if (versions.length === 0) {
+            return null;
+        }
+        
+        // 按版本号排序（降序）
+        versions.sort((a, b) => compareVersions(b, a));
+        
+        return versions[0];
+    } catch (error) {
+        console.warn('[Update] Failed to fetch from GitHub API:', error.message);
+        return null;
+    }
+}
+
+/**
  * 检查是否有新版本可用
+ * 支持两种模式：
+ * 1. Git 仓库模式：通过 git 命令获取最新 tag
+ * 2. Docker/非 Git 模式：通过 GitHub API 获取最新版本
  * @returns {Promise<Object>} 更新信息
  */
 async function checkForUpdates() {
@@ -2757,64 +2987,68 @@ async function checkForUpdates() {
     }
     
     // 检查是否在 git 仓库中
+    let isGitRepo = false;
     try {
         await execAsync('git rev-parse --git-dir');
+        isGitRepo = true;
     } catch (error) {
-        return {
-            hasUpdate: false,
-            localVersion,
-            latestVersion: null,
-            error: 'Current directory is not a Git repository, cannot check for updates'
-        };
+        isGitRepo = false;
+        console.log('[Update] Not in a Git repository, will use GitHub API to check for updates');
     }
     
-    // 获取远程 tags
-    try {
-        console.log('[Update] Fetching remote tags...');
-        await execAsync('git fetch --tags');
-    } catch (error) {
-        console.warn('[Update] Failed to fetch tags:', error.message);
-        return {
-            hasUpdate: false,
-            localVersion,
-            latestVersion: null,
-            error: 'Unable to fetch remote tags: ' + error.message
-        };
-    }
-    
-    // 获取最新的 tag（根据操作系统选择合适的命令）
     let latestTag = null;
-    const isWindows = process.platform === 'win32';
+    let updateMethod = 'unknown';
     
-    try {
-        if (isWindows) {
-            // Windows: 使用 git for-each-ref，这是跨平台兼容的方式
-            const { stdout } = await execAsync('git for-each-ref --sort=-v:refname --format="%(refname:short)" refs/tags --count=1');
-            latestTag = stdout.trim();
-        } else {
-            // Linux/macOS: 使用 head 命令，更高效
-            const { stdout } = await execAsync('git tag --sort=-v:refname | head -n 1');
-            latestTag = stdout.trim();
-        }
-    } catch (error) {
-        // 备用方案：获取所有 tags 并在 JavaScript 中排序
+    if (isGitRepo) {
+        // Git 仓库模式：使用 git 命令
+        updateMethod = 'git';
+        
+        // 获取远程 tags
         try {
-            const { stdout } = await execAsync('git tag');
-            const tags = stdout.trim().split('\n').filter(t => t);
-            if (tags.length > 0) {
-                // 按版本号排序（降序）
-                tags.sort((a, b) => compareVersions(b, a));
-                latestTag = tags[0];
-            }
-        } catch (e) {
-            console.warn('[Update] Failed to get latest tag:', e.message);
-            return {
-                hasUpdate: false,
-                localVersion,
-                latestVersion: null,
-                error: 'Unable to get latest version tag'
-            };
+            console.log('[Update] Fetching remote tags...');
+            await execAsync('git fetch --tags');
+        } catch (error) {
+            console.warn('[Update] Failed to fetch tags via git, falling back to GitHub API:', error.message);
+            // 如果 git fetch 失败，回退到 GitHub API
+            latestTag = await getLatestVersionFromGitHub();
+            updateMethod = 'github_api';
         }
+        
+        // 如果 git fetch 成功，获取最新的 tag
+        if (!latestTag && updateMethod === 'git') {
+            const isWindows = process.platform === 'win32';
+            
+            try {
+                if (isWindows) {
+                    // Windows: 使用 git for-each-ref，这是跨平台兼容的方式
+                    const { stdout } = await execAsync('git for-each-ref --sort=-v:refname --format="%(refname:short)" refs/tags --count=1');
+                    latestTag = stdout.trim();
+                } else {
+                    // Linux/macOS: 使用 head 命令，更高效
+                    const { stdout } = await execAsync('git tag --sort=-v:refname | head -n 1');
+                    latestTag = stdout.trim();
+                }
+            } catch (error) {
+                // 备用方案：获取所有 tags 并在 JavaScript 中排序
+                try {
+                    const { stdout } = await execAsync('git tag');
+                    const tags = stdout.trim().split('\n').filter(t => t);
+                    if (tags.length > 0) {
+                        // 按版本号排序（降序）
+                        tags.sort((a, b) => compareVersions(b, a));
+                        latestTag = tags[0];
+                    }
+                } catch (e) {
+                    console.warn('[Update] Failed to get latest tag via git, falling back to GitHub API:', e.message);
+                    latestTag = await getLatestVersionFromGitHub();
+                    updateMethod = 'github_api';
+                }
+            }
+        }
+    } else {
+        // 非 Git 仓库模式（如 Docker 容器）：使用 GitHub API
+        updateMethod = 'github_api';
+        latestTag = await getLatestVersionFromGitHub();
     }
     
     if (!latestTag) {
@@ -2822,7 +3056,8 @@ async function checkForUpdates() {
             hasUpdate: false,
             localVersion,
             latestVersion: null,
-            error: 'No version tags found'
+            updateMethod,
+            error: 'Unable to get latest version information'
         };
     }
     
@@ -2830,12 +3065,13 @@ async function checkForUpdates() {
     const comparison = compareVersions(latestTag, localVersion);
     const hasUpdate = comparison > 0;
     
-    console.log(`[Update] Local version: ${localVersion}, Latest tag: ${latestTag}, Has update: ${hasUpdate}`);
+    console.log(`[Update] Local version: ${localVersion}, Latest version: ${latestTag}, Has update: ${hasUpdate}, Method: ${updateMethod}`);
     
     return {
         hasUpdate,
         localVersion,
         latestVersion: latestTag,
+        updateMethod,
         error: null
     };
 }
@@ -2863,6 +3099,13 @@ async function performUpdate() {
     }
     
     const latestTag = updateInfo.latestVersion;
+    
+    // 检查更新方式 - 如果是通过 GitHub API 获取的版本信息，说明不在 Git 仓库中
+    if (updateInfo.updateMethod === 'github_api') {
+        // Docker/非 Git 环境，通过下载 tarball 更新
+        console.log('[Update] Running in Docker/non-Git environment, will download and extract tarball');
+        return await performTarballUpdate(updateInfo.localVersion, latestTag);
+    }
     
     console.log(`[Update] Starting update to ${latestTag}...`);
     
@@ -2920,7 +3163,284 @@ async function performUpdate() {
         localVersion: updateInfo.localVersion,
         latestVersion: latestTag,
         updated: true,
+        updateMethod: 'git',
         needsRestart: needsRestart,
         restartMessage: needsRestart ? 'Dependencies updated, recommend restarting service to apply changes' : null
     };
+}
+
+/**
+ * 通过下载 tarball 执行更新（用于 Docker/非 Git 环境）
+ * @param {string} localVersion - 本地版本
+ * @param {string} latestTag - 最新版本 tag
+ * @returns {Promise<Object>} 更新结果
+ */
+async function performTarballUpdate(localVersion, latestTag) {
+    const GITHUB_REPO = 'justlovemaki/AIClient-2-API';
+    const tarballUrl = `https://github.com/${GITHUB_REPO}/archive/refs/tags/${latestTag}.tar.gz`;
+    const appDir = process.cwd();
+    const tempDir = path.join(appDir, '.update_temp');
+    const tarballPath = path.join(tempDir, 'update.tar.gz');
+    
+    console.log(`[Update] Starting tarball update to ${latestTag}...`);
+    console.log(`[Update] Download URL: ${tarballUrl}`);
+    
+    try {
+        // 1. 创建临时目录
+        await fs.mkdir(tempDir, { recursive: true });
+        console.log('[Update] Created temp directory');
+        
+        // 2. 下载 tarball
+        console.log('[Update] Downloading tarball...');
+        const response = await fetch(tarballUrl, {
+            headers: {
+                'User-Agent': 'AIClient2API-Updater'
+            },
+            redirect: 'follow'
+        });
+        
+        if (!response.ok) {
+            throw new Error(`Failed to download tarball: ${response.status} ${response.statusText}`);
+        }
+        
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        await fs.writeFile(tarballPath, buffer);
+        console.log(`[Update] Downloaded tarball (${buffer.length} bytes)`);
+        
+        // 3. 解压 tarball
+        console.log('[Update] Extracting tarball...');
+        await execAsync(`tar -xzf "${tarballPath}" -C "${tempDir}"`);
+        
+        // 4. 找到解压后的目录（格式通常是 repo-name-tag）
+        const extractedItems = await fs.readdir(tempDir);
+        const extractedDir = extractedItems.find(item =>
+            item.startsWith('AIClient-2-API-') || item.startsWith('AIClient2API-')
+        );
+        
+        if (!extractedDir) {
+            throw new Error('Could not find extracted directory');
+        }
+        
+        const sourcePath = path.join(tempDir, extractedDir);
+        console.log(`[Update] Extracted to: ${sourcePath}`);
+        
+        // 5. 备份当前的 package.json 用于比较
+        const oldPackageJson = existsSync(path.join(appDir, 'package.json'))
+            ? readFileSync(path.join(appDir, 'package.json'), 'utf8')
+            : null;
+        
+        // 6. 定义需要保留的目录和文件（不被覆盖）
+        const preservePaths = [
+            'configs',           // 用户配置目录
+            'node_modules',      // 依赖目录
+            '.update_temp',      // 临时更新目录
+            'logs'               // 日志目录
+        ];
+        
+        // 7. 复制新文件到应用目录
+        console.log('[Update] Copying new files...');
+        const sourceItems = await fs.readdir(sourcePath);
+        
+        for (const item of sourceItems) {
+            // 跳过需要保留的目录
+            if (preservePaths.includes(item)) {
+                console.log(`[Update] Skipping preserved path: ${item}`);
+                continue;
+            }
+            
+            const srcItemPath = path.join(sourcePath, item);
+            const destItemPath = path.join(appDir, item);
+            
+            // 删除旧文件/目录（如果存在）
+            if (existsSync(destItemPath)) {
+                const stat = await fs.stat(destItemPath);
+                if (stat.isDirectory()) {
+                    await fs.rm(destItemPath, { recursive: true, force: true });
+                } else {
+                    await fs.unlink(destItemPath);
+                }
+            }
+            
+            // 复制新文件/目录
+            await copyRecursive(srcItemPath, destItemPath);
+            console.log(`[Update] Copied: ${item}`);
+        }
+        
+        // 8. 检查是否需要更新依赖
+        let needsRestart = true; // tarball 更新后总是建议重启
+        let needsNpmInstall = false;
+        
+        if (oldPackageJson) {
+            const newPackageJson = readFileSync(path.join(appDir, 'package.json'), 'utf8');
+            if (oldPackageJson !== newPackageJson) {
+                console.log('[Update] package.json changed, running npm install...');
+                needsNpmInstall = true;
+                try {
+                    await execAsync('npm install', { cwd: appDir });
+                    console.log('[Update] npm install completed');
+                } catch (npmError) {
+                    console.error('[Update] npm install failed:', npmError.message);
+                    // 不抛出错误，继续更新流程
+                }
+            }
+        }
+        
+        // 9. 清理临时目录
+        console.log('[Update] Cleaning up...');
+        await fs.rm(tempDir, { recursive: true, force: true });
+        
+        console.log(`[Update] Tarball update completed successfully to ${latestTag}`);
+        
+        return {
+            success: true,
+            message: `Successfully updated to version ${latestTag}`,
+            localVersion: localVersion,
+            latestVersion: latestTag,
+            updated: true,
+            updateMethod: 'tarball',
+            needsRestart: needsRestart,
+            needsNpmInstall: needsNpmInstall,
+            restartMessage: 'Code updated, please restart the service to apply changes'
+        };
+        
+    } catch (error) {
+        // 清理临时目录
+        try {
+            if (existsSync(tempDir)) {
+                await fs.rm(tempDir, { recursive: true, force: true });
+            }
+        } catch (cleanupError) {
+            console.warn('[Update] Failed to cleanup temp directory:', cleanupError.message);
+        }
+        
+        console.error('[Update] Tarball update failed:', error.message);
+        throw new Error(`Tarball update failed: ${error.message}`);
+    }
+}
+
+/**
+ * 递归复制文件或目录
+ * @param {string} src - 源路径
+ * @param {string} dest - 目标路径
+ */
+async function copyRecursive(src, dest) {
+    const stat = await fs.stat(src);
+    
+    if (stat.isDirectory()) {
+        await fs.mkdir(dest, { recursive: true });
+        const items = await fs.readdir(src);
+        for (const item of items) {
+            await copyRecursive(path.join(src, item), path.join(dest, item));
+        }
+    } else {
+        await fs.copyFile(src, dest);
+    }
+}
+
+/**
+ * 处理 OAuth 凭据文件上传
+ * @param {http.IncomingMessage} req - HTTP 请求对象
+ * @param {http.ServerResponse} res - HTTP 响应对象
+ * @param {Object} options - 可选配置
+ * @param {Object} options.providerMap - 提供商类型映射表
+ * @param {string} options.logPrefix - 日志前缀
+ * @param {string} options.userInfo - 用户信息（用于日志）
+ * @param {Object} options.customUpload - 自定义 multer 实例
+ * @returns {Promise<boolean>} 始终返回 true 表示请求已处理
+ */
+export function handleUploadOAuthCredentials(req, res, options = {}) {
+    const {
+        providerMap = {},
+        logPrefix = '[UI API]',
+        userInfo = '',
+        customUpload = null
+    } = options;
+    
+    const uploadMiddleware = customUpload ? customUpload.single('file') : upload.single('file');
+    
+    return new Promise((resolve) => {
+        uploadMiddleware(req, res, async (err) => {
+            if (err) {
+                console.error(`${logPrefix} File upload error:`, err.message);
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    error: {
+                        message: err.message || 'File upload failed'
+                    }
+                }));
+                resolve(true);
+                return;
+            }
+
+            try {
+                if (!req.file) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({
+                        error: {
+                            message: 'No file was uploaded'
+                        }
+                    }));
+                    resolve(true);
+                    return;
+                }
+
+                // multer执行完成后，表单字段已解析到req.body中
+                const providerType = req.body.provider || 'common';
+                // 应用提供商映射（如果有）
+                const provider = providerMap[providerType] || providerType;
+                const tempFilePath = req.file.path;
+                
+                // 根据实际的provider移动文件到正确的目录
+                let targetDir = path.join(process.cwd(), 'configs', provider);
+                
+                // 如果是kiro类型的凭证，需要再包裹一层文件夹
+                if (provider === 'kiro') {
+                    // 使用时间戳作为子文件夹名称，确保每个上传的文件都有独立的目录
+                    const timestamp = Date.now();
+                    const originalNameWithoutExt = path.parse(req.file.originalname).name;
+                    const subFolder = `${timestamp}_${originalNameWithoutExt}`;
+                    targetDir = path.join(targetDir, subFolder);
+                }
+                
+                await fs.mkdir(targetDir, { recursive: true });
+                
+                const targetFilePath = path.join(targetDir, req.file.filename);
+                await fs.rename(tempFilePath, targetFilePath);
+                
+                const relativePath = path.relative(process.cwd(), targetFilePath);
+
+                // 广播更新事件
+                broadcastEvent('config_update', {
+                    action: 'add',
+                    filePath: relativePath,
+                    provider: provider,
+                    timestamp: new Date().toISOString()
+                });
+
+                const userInfoStr = userInfo ? `, ${userInfo}` : '';
+                console.log(`${logPrefix} OAuth credentials file uploaded: ${targetFilePath} (provider: ${provider}${userInfoStr})`);
+
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    success: true,
+                    message: 'File uploaded successfully',
+                    filePath: relativePath,
+                    originalName: req.file.originalname,
+                    provider: provider
+                }));
+                resolve(true);
+
+            } catch (error) {
+                console.error(`${logPrefix} File upload processing error:`, error);
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    error: {
+                        message: 'File upload processing failed: ' + error.message
+                    }
+                }));
+                resolve(true);
+            }
+        });
+    });
 }

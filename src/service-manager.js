@@ -79,8 +79,10 @@ export async function autoLinkProviderConfigs(config) {
             for (const [displayName, providers] of Object.entries(allNewProviders)) {
                 console.log(`  ${displayName}: ${providers.length} config(s)`);
                 providers.forEach(p => {
-                    // 获取凭据路径键
-                    const credKey = Object.keys(p).find(k => k.endsWith('_CREDS_FILE_PATH'));
+                    // 获取凭据路径键（支持 _CREDS_FILE_PATH 和 _TOKEN_FILE_PATH 两种格式）
+                    const credKey = Object.keys(p).find(k =>
+                        k.endsWith('_CREDS_FILE_PATH') || k.endsWith('_TOKEN_FILE_PATH')
+                    );
                     if (credKey) {
                         console.log(`    - ${p[credKey]}`);
                     }
@@ -252,7 +254,9 @@ export async function getApiService(config, requestedModel = null, options = {})
             serviceConfig = deepmerge(config, selectedProviderConfig);
             delete serviceConfig.providerPools; // 移除 providerPools 属性
             config.uuid = serviceConfig.uuid;
-            console.log(`[API Service] Using pooled configuration for ${config.MODEL_PROVIDER}: ${serviceConfig.uuid}${requestedModel ? ` (model: ${requestedModel})` : ''}`);
+            config.customName = serviceConfig.customName;
+            const customNameDisplay = serviceConfig.customName ? ` (${serviceConfig.customName})` : '';
+            console.log(`[API Service] Using pooled configuration for ${config.MODEL_PROVIDER}: ${serviceConfig.uuid}${customNameDisplay}${requestedModel ? ` (model: ${requestedModel})` : ''}`);
         } else {
             const errorMsg = `[API Service] No healthy provider found in pool for ${config.MODEL_PROVIDER}${requestedModel ? ` supporting model: ${requestedModel}` : ''}`;
             console.error(errorMsg);
@@ -274,6 +278,7 @@ export async function getApiServiceWithFallback(config, requestedModel = null, o
     let actualProviderType = config.MODEL_PROVIDER;
     let isFallback = false;
     let selectedUuid = null;
+    let actualModel = null;
     
     if (providerPoolManager && config.providerPools && config.providerPools[config.MODEL_PROVIDER]) {
         const selectedResult = providerPoolManager.selectProviderWithFallback(
@@ -283,7 +288,7 @@ export async function getApiServiceWithFallback(config, requestedModel = null, o
         );
         
         if (selectedResult) {
-            const { config: selectedProviderConfig, actualProviderType: selectedType, isFallback: fallbackUsed } = selectedResult;
+            const { config: selectedProviderConfig, actualProviderType: selectedType, isFallback: fallbackUsed, actualModel: fallbackModel } = selectedResult;
             
             // 合并选中的提供者配置到当前请求的 config 中
             serviceConfig = deepmerge(config, selectedProviderConfig);
@@ -292,6 +297,7 @@ export async function getApiServiceWithFallback(config, requestedModel = null, o
             actualProviderType = selectedType;
             isFallback = fallbackUsed;
             selectedUuid = selectedProviderConfig.uuid;
+            actualModel = fallbackModel;
             
             // 如果发生了 fallback，需要更新 MODEL_PROVIDER
             if (isFallback) {
@@ -311,7 +317,8 @@ export async function getApiServiceWithFallback(config, requestedModel = null, o
         serviceConfig,
         actualProviderType,
         isFallback,
-        uuid: selectedUuid
+        uuid: selectedUuid,
+        actualModel
     };
 }
 
@@ -371,7 +378,8 @@ export async function getProviderStatus(config, options = {}) {
         'claude-custom': 'CLAUDE_BASE_URL',
         'claude-kiro-oauth': 'KIRO_OAUTH_CREDS_FILE_PATH',
         'openai-qwen-oauth': 'QWEN_OAUTH_CREDS_FILE_PATH',
-        'gemini-antigravity': 'ANTIGRAVITY_OAUTH_CREDS_FILE_PATH'
+        'gemini-antigravity': 'ANTIGRAVITY_OAUTH_CREDS_FILE_PATH',
+        'openai-iflow': 'IFLOW_TOKEN_FILE_PATH'
     };
     let providerPoolsSlim = [];
     let unhealthyProvideIdentifyList = [];

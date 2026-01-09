@@ -1,5 +1,5 @@
 import deepmerge from 'deepmerge';
-import { handleError, isAuthorized } from './common.js';
+import { handleError } from './common.js';
 import { handleUIApiRequests, serveStaticFiles } from './ui-manager.js';
 import { handleAPIRequests } from './api-manager.js';
 import { getApiService, getProviderStatus } from './service-manager.js';
@@ -7,6 +7,7 @@ import { getProviderPoolManager } from './service-manager.js';
 import { MODEL_PROVIDER } from './common.js';
 import { PROMPT_LOG_FILENAME } from './config-manager.js';
 import { handleOllamaRequest, handleOllamaShow } from './ollama-handler.js';
+import { getPluginManager } from './plugin-manager.js';
 
 /**
  * Parse request body as JSON
@@ -54,10 +55,17 @@ export function createRequestHandler(config, providerPoolManager) {
         }
 
         // Serve static files for UI (除了登录页面需要认证)
-        if (path.startsWith('/static/') || path === '/' || path === '/favicon.ico' || path === '/index.html' || path.startsWith('/app/') || path === '/login.html') {
+        // 检查是否是插件静态文件
+        const pluginManager = getPluginManager();
+        const isPluginStatic = pluginManager.isPluginStaticPath(path);
+        if (path.startsWith('/static/') || path === '/' || path === '/favicon.ico' || path === '/index.html' || path.startsWith('/app/') || path === '/login.html' || isPluginStatic) {
             const served = await serveStaticFiles(path, res);
             if (served) return;
         }
+
+        // 执行插件路由
+        const pluginRouteHandled = await pluginManager.executeRoutes(method, path, req, res);
+        if (pluginRouteHandled) return;
 
         const uiHandled = await handleUIApiRequests(method, path, req, res, currentConfig, providerPoolManager);
         if (uiHandled) return;
@@ -110,7 +118,7 @@ export function createRequestHandler(config, providerPoolManager) {
                 return true;
             } catch (error) {
                 console.log(`[Server] req provider_health error: ${error.message}`);
-                handleError(res, { statusCode: 500, message: `Failed to get providers health: ${error.message}` });
+                handleError(res, { statusCode: 500, message: `Failed to get providers health: ${error.message}` }, currentConfig.MODEL_PROVIDER);
                 return;
             }
         }
@@ -125,8 +133,11 @@ export function createRequestHandler(config, providerPoolManager) {
         }
           
         // Check if the first path segment matches a MODEL_PROVIDER and switch if it does
+        // Note: 'ollama' is not a valid MODEL_PROVIDER, it's a protocol prefix for Ollama API compatibility
         const pathSegments = path.split('/').filter(segment => segment.length > 0);
-        if (pathSegments.length > 0) {
+        const isOllamaPath = pathSegments[0] === 'ollama' || path.startsWith('/api/');
+        
+        if (pathSegments.length > 0 && !isOllamaPath) {
             const firstSegment = pathSegments[0];
             const isValidProvider = Object.values(MODEL_PROVIDER).includes(firstSegment);
             if (firstSegment && isValidProvider) {
@@ -140,25 +151,47 @@ export function createRequestHandler(config, providerPoolManager) {
             }
         }
 
+        // 1. 执行认证流程（只有 type='auth' 的插件参与）
+        const authResult = await pluginManager.executeAuth(req, res, requestUrl, currentConfig);
+        if (authResult.handled) {
+            // 认证插件已处理请求（如发送了错误响应）
+            return;
+        }
+        if (!authResult.authorized) {
+            // 没有认证插件授权，返回 401
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: { message: 'Unauthorized: API key is invalid or missing.' } }));
+            return;
+        }
+        
+        // 2. 执行普通中间件（type!='auth' 的插件）
+        const middlewareResult = await pluginManager.executeMiddleware(req, res, requestUrl, currentConfig);
+        if (middlewareResult.handled) {
+            // 中间件已处理请求
+            return;
+        }
+
+        // Handle Ollama request BEFORE getting apiService (Ollama endpoints handle their own provider selection)
+        // This is important because Ollama /api/tags aggregates models from ALL providers, not just the default one
+        if (isOllamaPath) {
+            const { handled, normalizedPath } = await handleOllamaRequest(method, path, requestUrl, req, res, null, currentConfig, providerPoolManager);
+            if (handled) return;
+            // If not handled by Ollama handler, continue with normal flow
+            path = normalizedPath;
+        }
+
         // 获取或选择 API Service 实例
         let apiService;
         try {
             apiService = await getApiService(currentConfig);
         } catch (error) {
-            handleError(res, { statusCode: 500, message: `Failed to get API service: ${error.message}` });
+            handleError(res, { statusCode: 500, message: `Failed to get API service: ${error.message}` }, currentConfig.MODEL_PROVIDER);
             const poolManager = getProviderPoolManager();
             if (poolManager) {
                 poolManager.markProviderUnhealthy(currentConfig.MODEL_PROVIDER, {
                     uuid: currentConfig.uuid
                 });
             }
-            return;
-        }
-
-        // Check authentication for API requests
-        if (!isAuthorized(req, requestUrl, currentConfig.REQUIRED_API_KEY)) {
-            res.writeHead(401, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: { message: 'Unauthorized: API key is invalid or missing.' } }));
             return;
         }
 
@@ -188,18 +221,13 @@ export function createRequestHandler(config, providerPoolManager) {
                 return true;
             } catch (error) {
                 console.error(`[Server] count_tokens error: ${error.message}`);
-                handleError(res, { statusCode: 500, message: `Failed to count tokens: ${error.message}` });
+                handleError(res, { statusCode: 500, message: `Failed to count tokens: ${error.message}` }, currentConfig.MODEL_PROVIDER);
                 return;
             }
         }
 
         try {
-            // Handle Ollama request (normalize path and route to appropriate endpoints)
-            const { handled, normalizedPath } = await handleOllamaRequest(method, path, requestUrl, req, res, apiService, currentConfig, providerPoolManager);
-            if (handled) return;
-            path = normalizedPath;
-
-            // Handle API requests
+            // Handle API requests (Ollama requests are already handled above before apiService is obtained)
             const apiHandled = await handleAPIRequests(method, path, req, res, currentConfig, apiService, providerPoolManager, PROMPT_LOG_FILENAME);
             if (apiHandled) return;
 
@@ -207,7 +235,7 @@ export function createRequestHandler(config, providerPoolManager) {
             res.writeHead(404, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: { message: 'Not Found' } }));
         } catch (error) {
-            handleError(res, error);
+            handleError(res, error, currentConfig.MODEL_PROVIDER);
         }
     };
 }

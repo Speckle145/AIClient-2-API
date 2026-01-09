@@ -31,6 +31,10 @@
 >
 > **📅 版本更新日志**
 >
+> <details>
+> <summary>点击展开查看详细版本历史</summary>
+>
+> - **2026.01.07** - 新增 iFlow 协议支持，通过 OAuth 认证方式访问 Qwen、Kimi、DeepSeek 和 GLM 系列模型，支持自动 token 刷新功能
 > - **2026.01.03** - 新增主题切换功能并优化提供商池初始化，移除使用提供商默认配置的降级策略
 > - **2025.12.30** - 添加主进程管理和自动更新功能
 > - **2025.12.25** - 配置文件统一管理：所有配置集中到 `configs/` 目录，Docker 用户需更新挂载路径为 `-v "本地路径:/app/configs"`
@@ -47,6 +51,7 @@
 > - **历史已开发**
 >   - 支持 Gemini CLI、Kiro 等客户端2API
 >   - OpenAI ,Claude ,Gemini 三协议互转，自动智能切换
+> </details>
 ---
 
 ## 💡 核心优势
@@ -101,7 +106,7 @@
 #### 🐳 Docker 快捷启动 (推荐)
 
 ```bash
-docker run -d -p 3000:3000 -p 8085:8085 -p 8086:8086 -p 19876-19880:19876-19880 --restart=always -v "指定路径:/app/configs" --name aiclient2api justlikemaki/aiclient-2-api
+docker run -d -p 3000:3000 -p 8085-8087:8085-8087 -p 19876-19880:19876-19880 --restart=always -v "指定路径:/app/configs" --name aiclient2api justlikemaki/aiclient-2-api
 ```
 
 **参数说明**：
@@ -110,6 +115,21 @@ docker run -d -p 3000:3000 -p 8085:8085 -p 8086:8086 -p 19876-19880:19876-19880 
 - `--restart=always`：容器自动重启策略
 - `-v "指定路径:/app/configs"`：挂载配置目录（请将"指定路径"替换为实际路径，如 `/home/user/aiclient-configs`）
 - `--name aiclient2api`：容器名称
+
+#### 🐳 Docker Compose 部署
+
+你也可以使用 Docker Compose 进行部署。首先，进入 `docker` 目录：
+
+```bash
+cd docker
+mkdir -p configs
+docker compose up -d
+```
+
+如需从源码构建而非使用预构建镜像，请编辑 `docker-compose.yml`：
+1. 注释掉 `image: justlikemaki/aiclient-2-api:latest` 行
+2. 取消 `build:` 部分的注释
+3. 运行 `docker compose up -d --build`
 
 #### 1. 运行启动脚本
 *   **Linux/macOS**: `chmod +x install-and-run.sh && ./install-and-run.sh`
@@ -188,6 +208,9 @@ docker run -d -p 3000:3000 -p 8085:8085 -p 8086:8086 -p 19876-19880:19876-19880 
 
 ### 🔐 授权配置指南
 
+<details>
+<summary>点击展开查看各提供商授权配置详细步骤</summary>
+
 > **💡 提示**：为了获得最佳体验，建议通过 **Web UI 控制台** 进行可视化授权管理。
 
 #### 🌐 Web UI 快捷授权 (推荐)
@@ -229,7 +252,12 @@ docker run -d -p 3000:3000 -p 8085:8085 -p 8086:8086 -p 19876-19880:19876-19880 
 3. **启动参数配置**：使用 `--provider-pools-file <path>` 参数指定号池配置文件路径
 4. **健康检查**：系统会定期自动执行健康检查，不使用不健康的提供商
 
+</details>
+
 ### 📁 授权文件存储路径
+
+<details>
+<summary>点击展开查看各服务授权凭据的默认存储位置</summary>
 
 各服务的授权凭据文件默认存储位置：
 
@@ -244,6 +272,8 @@ docker run -d -p 3000:3000 -p 8085:8085 -p 8086:8086 -p 19876-19880:19876-19880 
 
 > **自定义路径**：可通过配置文件中的相关参数或环境变量指定自定义存储位置
 
+</details>
+
 ---
 
 ### 🦙 Ollama 协议使用示例
@@ -254,13 +284,15 @@ docker run -d -p 3000:3000 -p 8085:8085 -p 8086:8086 -p 19876-19880:19876-19880 
 
 1. **列出所有可用模型**：
 ```bash
-curl http://localhost:3000/ollama/api/tags
+curl http://localhost:3000/ollama/api/tags \
+  -H "Authorization: Bearer your-api-key"
 ```
 
 2. **聊天接口**：
 ```bash
 curl http://localhost:3000/ollama/api/chat \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-api-key" \
   -d '{
     "model": "[Claude] claude-sonnet-4.5",
     "messages": [
@@ -279,6 +311,9 @@ curl http://localhost:3000/ollama/api/chat \
 ---
 
 ### 高级配置
+
+<details>
+<summary>点击展开查看代理配置、模型过滤及 Fallback 等高级设置</summary>
 
 #### 1. 代理配置
 
@@ -394,9 +429,14 @@ curl http://localhost:3000/ollama/api/chat \
 - Fallback 只会在协议兼容的类型之间进行（如 `gemini-*` 之间、`claude-*` 之间）
 - 系统会自动检查目标 Provider Type 是否支持当前请求的模型
 
+</details>
+
 ---
 
 ## ❓ 常见问题
+
+<details>
+<summary>点击展开查看常见问题及解决方案（端口占用、Docker 启动、429 错误等）</summary>
 
 ### 1. OAuth 授权失败
 
@@ -515,6 +555,8 @@ kill -9 <PID>
 - **检查 API Key 配置**：确保在 `configs/config.json` 或 Web UI 中正确配置API Key
 - **检查请求头格式**：确保请求中包含正确格式的 Authorization 头，如 `Authorization: Bearer your-api-key`
 - **查看服务日志**：在 Web UI 的"实时日志"页面查看详细错误信息，定位具体原因
+
+</details>
 
 ---
 
